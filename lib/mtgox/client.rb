@@ -16,7 +16,8 @@ module MtGox
     include MtGox::Connection
     include MtGox::Request
 
-    ORDER_TYPES = {sell: 1, buy: 2}
+    ORDER_TYPES = {sell: "ask", buy: "bid"}
+    INT_MULTIPLIERS = {btc: 100000000, usd: 100000, jpy: 1000}
 
     # Fetch a deposit address
     # @authenticated true
@@ -132,7 +133,7 @@ module MtGox
     # @example
     #   MtGox.balance
     def balance
-      parse_balance(post('/api/0/getFunds.php', {}))
+      parse_balance(post('/api/1/generic/private/info', {})['return'])
     end
 
     # Fetch your open orders, both buys and sells, for network efficiency
@@ -142,7 +143,7 @@ module MtGox
     # @example
     #   MtGox.orders
     def orders
-      parse_orders(post('/api/0/getOrders.php', {})['orders'])
+      parse_orders(post('/api/1/generic/private/orders', {})['return'])
     end
 
     # Fetch your open buys
@@ -170,12 +171,12 @@ module MtGox
     # @authenticated true
     # @param amount [Numeric] the number of bitcoins to purchase
     # @param price [Numeric] the bid price in US dollars
-    # @return [Hash] with keys :buys and :sells, which contain arrays as described in {MtGox::Client#buys} and {MtGox::Clients#sells}
+    # @return [String] order ID for the buy, can be inspected using order_result
     # @example
     #   # Buy one bitcoin for $0.011
     #   MtGox.buy! 1.0, 0.011
     def buy!(amount, price)
-      parse_orders(post('/api/0/buyBTC.php', {amount: amount, price: price})['orders'])
+      addorder!(:buy, amount, price)
     end
 
     # Place a limit order to sell BTC
@@ -183,12 +184,26 @@ module MtGox
     # @authenticated true
     # @param amount [Numeric] the number of bitcoins to sell
     # @param price [Numeric] the ask price in US dollars
-    # @return [Hash] with keys :buys and :sells, which contain arrays as described in {MtGox::Client#buys} and {MtGox::Clients#sells}
+    # @return [String] order ID for the sell, can be inspected using order_result
     # @example
     #   # Sell one bitcoin for $100
     #   MtGox.sell! 1.0, 100.0
     def sell!(amount, price)
-      parse_orders(post('/api/0/sellBTC.php', {amount: amount, price: price})['orders'])
+      addorder!(:sell, amount, price)
+    end
+
+    # Create a new order
+    #
+    # @authenticated true
+    # @param type [String] the type of order to create, either "buy" or "sell"
+    # @param amount [Numberic] the number of bitcoins to buy/sell
+    # @param price [Numeric] the bid/ask price in USD
+    # @return [String] order ID for the order, can be inspected using order_result
+    # @example
+    #   # Sell one bitcoin for $123
+    #   MtGox.addorder! :sell, 1.0, 123.0
+    def addorder!(type, amount, price)
+      post('/api/1/BTCUSD/private/order/add', {type: order_type(type), amount_int: intify(amount,:btc), price_int: intify(price, :usd)})['return']
     end
 
     # Cancel an open order
@@ -229,20 +244,20 @@ module MtGox
     # @authenticated true
     # @param amount [Numeric] the number of bitcoins to withdraw
     # @param btca [String] the bitcoin address to send to
-    # @return [Array<MtGox::Balance>]
+    # @return [String] completed transaction ID
     # @example
     #   # Withdraw 1 BTC from your account
     #   MtGox.withdraw! 1.0, '1KxSo9bGBfPVFEtWNLpnUK1bfLNNT4q31L'
-    def withdraw!(amount, btca)
-      parse_balance(post('/api/0/withdraw.php', {group1: 'BTC', amount: amount, btca: btca}))
+    def withdraw!(amount, address)
+      post('/api/1/generic/bitcoin/send_simple', {amount_int: intify(amount, :btc), address: address})['return']['trx']
     end
 
     private
 
     def parse_balance(balance)
       balances = []
-      balances << Balance.new('BTC', balance['btcs'])
-      balances << Balance.new('USD', balance['usds'])
+      balances << Balance.new('BTC', balance['Wallets']['BTC']['Balance']['value'])
+      balances << Balance.new('USD', balance['Wallets']['USD']['Balance']['value'])
       balances
     end
 
@@ -258,6 +273,18 @@ module MtGox
         end
       end
       {buys: buys, sells: sells}
+    end
+
+    def intify(float, currency)
+     (float * INT_MULTIPLIERS[currency]).to_i
+    end
+
+    def order_type(type)
+      unless ["bid", "ask"].include?(type.to_s)
+        ORDER_TYPES[type.downcase.to_sym]
+      else
+        type
+      end
     end
   end
 end
